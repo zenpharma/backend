@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<!DOCTYPE module PUBLIC
+    "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+    "https://checkstyle.org/dtds/configuration_1_3.dtd">
+<!--
+  Practical Checkstyle ruleset for Spring Boot microservices.
+  failOnViolation=false in pom.xml means these are warnings not errors.
+  Tighten by setting failOnViolation=true in pom.xml when the team is ready.
+-->
+<module name="Checker">
+  <property name="severity" value="warning"/>
+  <property name="fileExtensions" value="java"/>
+
+  <!-- Disallow tab characters — use spaces -->
+  <module name="FileTabCharacter"/>
+
+  <module name="TreeWalker">
+
+    <!-- ── Imports ── -->
+    <module name="UnusedImports"/>
+    <module name="AvoidStarImport"/>
+    <module name="RedundantImport"/>
+
+    <!-- ── Naming conventions ── -->
+    <module name="ConstantName"/>          <!-- UPPER_SNAKE_CASE for constants -->
+    <module name="LocalVariableName"/>     <!-- lowerCamelCase -->
+    <module name="MemberName"/>            <!-- lowerCamelCase -->
+    <module name="MethodName"/>            <!-- lowerCamelCase -->
+    <module name="PackageName">
+      <property name="format" value="^[a-z]+(\.[a-z][a-z0-9]*)*$"/>
+    </module>
+    <module name="ParameterName"/>
+    <module name="TypeName"/>              <!-- UpperCamelCase -->
+
+    <!-- ── Code quality ── -->
+    <module name="EqualsHashCode"/>        <!-- if equals() defined, hashCode() must be too -->
+    <module name="EmptyBlock">
+      <property name="option" value="text"/>
+    </module>
+    <module name="NeedBraces"/>            <!-- always use { } for if/for/while -->
+    <module name="SimplifyBooleanExpression"/>
+    <module name="SimplifyBooleanReturn"/>
+
+    <!-- ── Method length ── -->
+    <module name="MethodLength">
+      <property name="max" value="80"/>
+    </module>
+
+    <!-- ── Misc ── -->
+    <module name="UpperEll"/>             <!-- use L not l for long literals -->
+    <module name="ArrayTypeStyle"/>       <!-- use String[] not String args[] -->
+
+  </module>
+</module>

@@ -1,0 +1,87 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      routes:
+        - id: auth-service
+          uri: "${AUTH_SERVICE_URL:http://auth-service:8081}"
+          predicates:
+            - Path=/api/auth/**
+          filters:
+            - StripPrefix=0
+
+        - id: drug-catalog-service
+          uri: "${DRUG_CATALOG_URL:http://drug-catalog-service:8082}"
+          predicates:
+            - Path=/api/drugs/**
+          filters:
+            - AuthFilter
+            - RewritePath=/api/drugs(?<segment>/?.*), /api/drug/catalog${segment}
+
+        - id: notification-service
+          uri: "${NOTIFICATION_URL:http://notification-service:3000}"
+          predicates:
+            - Path=/api/notifications/**
+          filters:
+            - AuthFilter
+
+        - id: inventory-service
+          uri: "${INVENTORY_SERVICE_URL:http://inventory-service:8083}"
+          predicates:
+            - Path=/api/inventory/**
+          filters:
+            - AuthFilter
+
+        - id: supplier-service
+          uri: "${SUPPLIER_SERVICE_URL:http://supplier-service:8084}"
+          predicates:
+            - Path=/api/suppliers/**
+          filters:
+            - AuthFilter
+
+        - id: manufacturing-service
+          uri: "${MANUFACTURING_SERVICE_URL:http://manufacturing-service:8085}"
+          predicates:
+            - Path=/api/manufacturing/**
+          filters:
+            - AuthFilter
+
+        - id: qc-service-root
+          uri: "${QC_SERVICE_URL:http://qc-service:8086}"
+          predicates:
+            - Path=/api/qc
+          filters:
+            - AuthFilter
+            - RewritePath=/api/qc, /api/qc/inspections
+
+        - id: qc-service
+          uri: "${QC_SERVICE_URL:http://qc-service:8086}"
+          predicates:
+            - Path=/api/qc/**
+          filters:
+            - AuthFilter
+
+      globalcors:
+        corsConfigurations:
+          '[/**]':
+            allowedOrigins: "*"
+            allowedMethods: ["GET","POST","PUT","DELETE","OPTIONS"]
+            allowedHeaders: "*"
+
+auth:
+  service:
+    url: "${AUTH_SERVICE_URL:http://auth-service:8081}"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  metrics:
+    export:
+      prometheus:
+        enabled: true

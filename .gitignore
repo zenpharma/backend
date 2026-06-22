@@ -1,0 +1,44 @@
+# Maven build output
+**/target/
+**/dependency-check-report.html
+
+# Node.js
+**/node_modules/
+npm-debug.log*
+
+# Compiled class files
+**/*.class
+
+# Package files
+**/*.jar
+**/*.war
+**/*.ear
+
+# IntelliJ / Eclipse
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+.vscode/
+
+# Maven wrapper (keep mvnw, ignore .mvn/wrapper/*.jar)
+.mvn/wrapper/maven-wrapper.jar
+
+# Environment / secrets (never commit)
+**/.env
+**/.env.local
+**/application-local.yml
+**/application-secret.yml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test coverage
+**/coverage/
+**/jacoco.exec
+
+# Logs
+*.log
+logs/
