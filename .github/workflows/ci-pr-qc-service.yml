@@ -1,0 +1,27 @@
+name: PR Check — qc-service
+
+on:
+  push:
+    branches: ['feat-*', 'fix-*', 'chore-*']
+    paths:
+      - 'qc-service/**'
+      - '.github/workflows/ci-pr-qc-service.yml'
+  pull_request:
+    branches: [develop]
+    paths:
+      - 'qc-service/**'
+
+permissions:
+  contents: read
+  pull-requests: read
+  security-events: write
+  actions: read
+
+jobs:
+  pr-check:
+    uses: ./.github/workflows/_java-pr-check.yml
+    with:
+      service-name: qc-service
+      service-dir: qc-service
+      needs-database: false
+    secrets: inherit

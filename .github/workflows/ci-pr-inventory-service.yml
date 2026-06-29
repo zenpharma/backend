@@ -1,0 +1,27 @@
+name: PR Check — inventory-service
+
+on:
+  push:
+    branches: ['feat-*', 'fix-*', 'chore-*']
+    paths:
+      - 'inventory-service/**'
+      - '.github/workflows/ci-pr-inventory-service.yml'
+  pull_request:
+    branches: [develop]
+    paths:
+      - 'inventory-service/**'
+
+permissions:
+  contents: read
+  pull-requests: read
+  security-events: write
+  actions: read
+
+jobs:
+  pr-check:
+    uses: ./.github/workflows/_java-pr-check.yml
+    with:
+      service-name: inventory-service
+      service-dir: inventory-service
+      needs-database: true
+    secrets: inherit

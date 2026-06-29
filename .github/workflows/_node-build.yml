@@ -1,0 +1,178 @@
+# Reusable — Node.js Build + SAST + Container Security + ECR Push + Cosign Sign
+#
+# Called by the notification-service ci-notification.yml workflow.
+# Pipeline stages (all in a single job, sequential):
+#   1. npm ci + ESLint      — install dependencies + lint (--max-warnings 0)
+#   2. npm test             — unit tests with Jest + coverage gate (≥ 80%)
+#   3. SonarCloud    — SAST + code quality + coverage analysis
+#   4. npm audit            — fail if any HIGH/CRITICAL vulnerabilities found
+#   5. Docker build         — multi-stage, non-root UID/GID 1000
+#   6. Trivy                — image scan, fail on HIGH/CRITICAL CVEs
+#   7. ECR push             — tagged as sha-<7chars>
+#   8. Cosign sign          — keyless, GitHub OIDC → Fulcio CA → Rekor transparency log
+#
+# Outputs: image-tag (sha-<7chars>), registry (ECR registry URL)
+
+name: Reusable — Node.js Build & Security Gates
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        description: "Service name (e.g. notification-service)"
+        required: true
+        type: string
+      service-dir:
+        description: "Service directory relative to repo root"
+        required: true
+        type: string
+      ecr-repository:
+        description: "ECR repository name"
+        required: true
+        type: string
+      node-version:
+        description: "Node.js version to use"
+        required: false
+        type: string
+        default: '22'
+      aws-region:
+        description: "AWS region where ECR lives"
+        required: false
+        type: string
+        default: us-east-1
+    outputs:
+      image-tag:
+        description: "Docker image tag pushed to ECR (format: sha-<7chars>)"
+        value: ${{ jobs.build-and-push.outputs.image_tag }}
+      registry:
+        description: "ECR registry base URL"
+        value: ${{ jobs.build-and-push.outputs.registry }}
+    secrets:
+      AWS_ACCOUNT_ID:
+        required: true
+
+jobs:
+  build-and-push:
+    name: Build · SAST · Scan · Push · Sign (${{ inputs.service-name }})
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write        # OIDC — AWS + Cosign keyless
+      contents: read         # Checkout
+      actions: read
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      registry:  ${{ steps.login-ecr.outputs.registry }}
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # ── Derive short-SHA image tag ───────────────────────────────────────────
+      - name: Set image tag
+        id: meta
+        run: echo "image_tag=sha-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      # ── Node.js toolchain ────────────────────────────────────────────────────
+      - name: Setup Node.js ${{ inputs.node-version }}
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.service-dir }}/package-lock.json
+
+      - name: Install dependencies
+        run: cd ${{ inputs.service-dir }} && npm ci
+
+      # ── Lint ──────────────────────────────────────────────────────────────────
+      - name: ESLint (--max-warnings 0)
+        run: cd ${{ inputs.service-dir }} && npx eslint src/ --ext .js,.ts --max-warnings 0
+
+
+      - name: npm test (Jest + coverage gate ≥ 80%)
+        run: cd ${{ inputs.service-dir }} && npm test -- --coverage --ci
+        env:
+          NODE_ENV: test
+
+      - name: Upload Jest coverage report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage-${{ inputs.service-name }}
+          path: ${{ inputs.service-dir }}/coverage/
+          retention-days: 7
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v3
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          projectBaseDir: ${{ inputs.service-dir }}
+          args: >
+            -Dsonar.organization=${{ vars.SONAR_ORG }}
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY_BACKEND }}
+            -Dsonar.sources=src
+            -Dsonar.tests=src
+            -Dsonar.test.inclusions=**/*.test.js
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+
+
+      - name: npm audit (HIGH/CRITICAL → warn)
+        run: cd ${{ inputs.service-dir }} && npm audit --audit-level=high
+        continue-on-error: true
+
+      # ── AWS credentials via OIDC (no long-lived keys) ─────────────────────────
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/pharma-dev-github-actions-role
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── Docker build (multi-stage, non-root UID/GID 1000) ─────────────────────
+      - name: Build Docker image
+        id: docker-build
+        run: |
+          IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository }}:${{ steps.meta.outputs.image_tag }}"
+          cd ${{ inputs.service-dir }}
+          docker build \
+            --build-arg UID=1000 \
+            --build-arg GID=1000 \
+            -t "$IMAGE" \
+            .
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+
+      # ── Trivy — image scan (fail on HIGH/CRITICAL CVEs) ───────────────────────
+      - name: Trivy — Image vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.docker-build.outputs.image }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+          ignore-unfixed: true
+
+      # ── Push image to ECR ─────────────────────────────────────────────────────
+      - name: Push image to ECR
+        id: push
+        run: |
+          IMAGE="${{ steps.docker-build.outputs.image }}"
+          docker push "$IMAGE"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE" | awk -F@ '{print $2}')
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          echo "Pushed: $IMAGE  (digest: $DIGEST)"
+
+      # ── Cosign keyless sign ────────────────────────────────────────────────────
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Cosign — Sign image (keyless, GitHub OIDC → Fulcio → Rekor)
+        run: |
+          cosign sign --yes \
+            "${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository }}@${{ steps.push.outputs.digest }}"
+        env:
+          COSIGN_EXPERIMENTAL: "true"

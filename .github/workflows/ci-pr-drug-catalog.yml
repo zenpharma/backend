@@ -1,0 +1,27 @@
+name: PR Check — drug-catalog
+
+on:
+  push:
+    branches: ['feat-*', 'fix-*', 'chore-*']
+    paths:
+      - 'drug-catalog-service/**'
+      - '.github/workflows/ci-pr-drug-catalog.yml'
+  pull_request:
+    branches: [develop]
+    paths:
+      - 'drug-catalog-service/**'
+
+permissions:
+  contents: read
+  pull-requests: read
+  security-events: write
+  actions: read
+
+jobs:
+  pr-check:
+    uses: ./.github/workflows/_java-pr-check.yml
+    with:
+      service-name: drug-catalog-service
+      service-dir: drug-catalog-service
+      needs-database: true
+    secrets: inherit

@@ -1,0 +1,30 @@
+name: PR Check — api-gateway
+
+# Runs on feature/fix/chore branches and PRs to develop.
+# Lint + test + SAST only. No Docker, no ECR, no deploy.
+
+on:
+  push:
+    branches: ['feat-*', 'fix-*', 'chore-*']
+    paths:
+      - 'api-gateway/**'
+      - '.github/workflows/ci-pr-api-gateway.yml'
+  pull_request:
+    branches: [develop]
+    paths:
+      - 'api-gateway/**'
+
+permissions:
+  contents: read
+  pull-requests: read
+  security-events: write
+  actions: read
+
+jobs:
+  pr-check:
+    uses: ./.github/workflows/_java-pr-check.yml
+    with:
+      service-name: api-gateway
+      service-dir: api-gateway
+      needs-database: false
+    secrets: inherit

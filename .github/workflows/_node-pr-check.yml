@@ -1,0 +1,91 @@
+# Reusable — Lightweight Node.js PR / Feature Branch Check
+#
+# Used by ci-pr-notification.yml on feat-*, fix-*, chore-* branches and PRs.
+# No Docker, no ECR, no Cosign. Fast feedback for developers.
+#
+# Stages:
+#   1. ESLint        — lint (--max-warnings 0)
+#   2. Jest          — unit tests + coverage
+#   3. SonarCloud    — SAST + code quality + coverage analysis
+#   4. npm audit     — fail on HIGH/CRITICAL vulnerabilities
+
+name: Reusable — Node.js PR Check (no Docker)
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        required: true
+        type: string
+      service-dir:
+        required: true
+        type: string
+      node-version:
+        required: false
+        type: string
+        default: '22'
+    secrets:
+      SONAR_TOKEN:
+        required: false
+
+jobs:
+  pr-check:
+    name: PR Check (${{ inputs.service-name }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js ${{ inputs.node-version }}
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.service-dir }}/package-lock.json
+
+      - name: Install dependencies
+        run: cd ${{ inputs.service-dir }} && npm ci
+
+      - name: ESLint (--max-warnings 0)
+        run: cd ${{ inputs.service-dir }} && npx eslint src/ --ext .js,.ts --max-warnings 0
+
+
+      - name: Jest (tests + coverage)
+        run: cd ${{ inputs.service-dir }} && npm test -- --coverage --ci
+        env:
+          NODE_ENV: test
+
+      - name: Upload Jest coverage report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage-${{ inputs.service-name }}
+          path: ${{ inputs.service-dir }}/coverage/
+          retention-days: 3
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v3
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          projectBaseDir: ${{ inputs.service-dir }}
+          args: >
+            -Dsonar.organization=${{ vars.SONAR_ORG }}
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY_BACKEND }}
+            -Dsonar.sources=src
+            -Dsonar.tests=src
+            -Dsonar.test.inclusions=**/*.test.js
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+
+
+
+      - name: npm audit (HIGH/CRITICAL → warn)
+        run: cd ${{ inputs.service-dir }} && npm audit --audit-level=high
+        continue-on-error: true

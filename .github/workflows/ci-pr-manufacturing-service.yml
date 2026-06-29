@@ -1,0 +1,27 @@
+name: PR Check — manufacturing-service
+
+on:
+  push:
+    branches: ['feat-*', 'fix-*', 'chore-*']
+    paths:
+      - 'manufacturing-service/**'
+      - '.github/workflows/ci-pr-manufacturing-service.yml'
+  pull_request:
+    branches: [develop]
+    paths:
+      - 'manufacturing-service/**'
+
+permissions:
+  contents: read
+  pull-requests: read
+  security-events: write
+  actions: read
+
+jobs:
+  pr-check:
+    uses: ./.github/workflows/_java-pr-check.yml
+    with:
+      service-name: manufacturing-service
+      service-dir: manufacturing-service
+      needs-database: true
+    secrets: inherit

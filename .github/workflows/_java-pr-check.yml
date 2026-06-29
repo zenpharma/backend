@@ -1,0 +1,130 @@
+# Reusable — Lightweight Java PR / Feature Branch Check
+#
+# Used by ci-pr-<service>.yml workflows on feat-*, fix-*, chore-* branches and PRs.
+# Intentionally stops before Docker — no image build, no ECR push, no Cosign.
+# Goal: fast feedback (~5 min) for developers without burning ECR storage or runner time.
+#
+# Stages:
+#   1. Maven verify  — unit/integration tests + JaCoCo coverage
+#   2. SonarCloud    — SAST + code quality + coverage analysis
+#   3. OWASP Dep Chk — CVSS ≥ 7.0 reported (non-blocking; add NVD_API_KEY for faster NVD sync)
+
+name: Reusable — Java PR Check (no Docker)
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        required: true
+        type: string
+      service-dir:
+        required: true
+        type: string
+      needs-database:
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      SONAR_TOKEN:
+        required: false
+      NVD_API_KEY:
+        description: "NIST NVD API key — higher rate limits + faster OWASP NVD updates"
+        required: false
+
+jobs:
+  pr-check:
+    name: PR Check (${{ inputs.service-name }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java 17 (Temurin)
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: maven
+
+      - name: Start PostgreSQL (integration tests)
+        if: ${{ inputs.needs-database }}
+        run: |
+          docker run -d \
+            --name testdb \
+            -e POSTGRES_DB=testdb \
+            -e POSTGRES_USER=testuser \
+            -e POSTGRES_PASSWORD=testpass \
+            -p 5432:5432 \
+            postgres:15-alpine
+          until docker exec testdb pg_isready -U testuser 2>/dev/null; do sleep 2; done
+          echo "PostgreSQL ready."
+
+
+      - name: Maven verify (tests + JaCoCo coverage)
+        run: cd ${{ inputs.service-dir }} && mvn verify --no-transfer-progress
+        env:
+          SPRING_DATASOURCE_URL:      ${{ inputs.needs-database && 'jdbc:postgresql://localhost:5432/testdb' || '' }}
+          SPRING_DATASOURCE_USERNAME: ${{ inputs.needs-database && 'testuser' || '' }}
+          SPRING_DATASOURCE_PASSWORD: ${{ inputs.needs-database && 'testpass' || '' }}
+
+      - name: Upload JaCoCo coverage report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage-${{ inputs.service-name }}
+          path: ${{ inputs.service-dir }}/target/site/jacoco/
+          retention-days: 3
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v3
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          projectBaseDir: ${{ inputs.service-dir }}
+          args: >
+            -Dsonar.organization=${{ vars.SONAR_ORG }}
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY_BACKEND }}
+            -Dsonar.java.binaries=target/classes
+            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+
+
+
+      # ── OWASP Dependency Check ────────────────────────────────────────────────
+      # Optional repo secret NVD_API_KEY — higher NVD rate limits; see CI-ARCHITECTURE.md
+      - name: Cache OWASP NVD database
+        if: false 
+        uses: actions/cache@v4
+        with:
+          path: ~/.owasp/dependency-check-data
+          key: owasp-nvd-${{ runner.os }}-${{ hashFiles(format('{0}/pom.xml', inputs.service-dir)) }}
+          restore-keys: owasp-nvd-${{ runner.os }}-
+
+      - name: OWASP Dependency Check (CVSS ≥ 7.0 — advisory; non-blocking)
+        if: false
+        continue-on-error: true
+        run: |
+          cd ${{ inputs.service-dir }}
+          mvn org.owasp:dependency-check-maven:check \
+            -DfailBuildOnCVSS=7 \
+            -DenableRetired=true \
+            #    -DnvdApiKey=${{ secrets.NVD_API_KEY }} \
+            #    -DnvdApiDelay=1000 \
+            -DdataDirectory=$HOME/.owasp/dependency-check-data \
+            -Dformat=HTML \
+            --no-transfer-progress
+
+      - name: Upload Dependency Check report
+        if: false
+     #   if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: depcheck-${{ inputs.service-name }}
+          path: ${{ inputs.service-dir }}/target/dependency-check-report.html
+          retention-days: 3

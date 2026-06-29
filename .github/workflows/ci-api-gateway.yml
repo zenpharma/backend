@@ -1,0 +1,80 @@
+name: CI/CD — api-gateway
+
+# Triggers on push to develop / release branches only.
+# Feature branches and PRs → ci-pr-api-gateway.yml
+#
+# Jobs:
+#   build       → Maven + SAST + Docker + ECR + Cosign
+#   deploy-dev  → direct commit to envs/dev/ → ArgoCD auto-syncs → smoke test
+#
+#
+# PROD promotion → promote-prod.yml (workflow_dispatch)
+
+on:
+  push:
+    branches: [develop, 'release/**']
+    paths:
+      - 'api-gateway/**'
+      - '.github/workflows/ci-api-gateway.yml'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch to build'
+        required: false
+        default: 'develop'
+
+permissions:
+  id-token: write
+  contents: read
+  security-events: write
+  actions: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: api-gateway
+  GITOPS_REPO: ${{ vars.GITOPS_REPO }}
+
+jobs:
+
+  # ── 1. Build: Maven · SonarCloud · OWASP Dep · Trivy · ECR · Cosign ──
+  build:
+    name: "Build & Security Gates (api-gateway)"
+    uses: ./.github/workflows/_java-build.yml
+    with:
+      service-name: api-gateway
+      service-dir: api-gateway
+      ecr-repository: api-gateway
+      aws-region: us-east-1
+      needs-database: false
+    secrets: inherit
+
+  # ── 2. Deploy to DEV (direct commit — ArgoCD auto-syncs) ──────────────────
+  deploy-dev:
+    name: "🚀 Deploy api-gateway → DEV"
+    needs: build
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: _gitops
+
+      - name: Update image tag — DEV
+        env:
+          IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
+        run: |
+          yq e ".image.tag = \"${IMAGE_TAG}\"" -i \
+            "_gitops/envs/dev/values-api-gateway.yaml"
+          cd _gitops
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git diff --staged --quiet && echo "Already up to date" && exit 0
+          git commit -m "ci(dev): update api-gateway → ${IMAGE_TAG}"
+          git pull --rebase origin main
+          git push

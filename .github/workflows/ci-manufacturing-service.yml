@@ -1,0 +1,75 @@
+name: CI/CD — manufacturing-service
+
+# Triggers on push to develop / release branches only.
+# Feature branches and PRs → ci-pr-manufacturing-service.yml
+# PROD promotion → promote-prod.yml (workflow_dispatch)
+
+on:
+  push:
+    branches: [develop, 'release/**']
+    paths:
+      - 'manufacturing-service/**'
+      - '.github/workflows/ci-manufacturing-service.yml'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch to build'
+        required: false
+        default: 'develop'
+
+permissions:
+  id-token: write
+  contents: read
+  security-events: write
+  actions: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: manufacturing-service
+  GITOPS_REPO: ${{ vars.GITOPS_REPO }}
+
+jobs:
+
+  build:
+    name: "Build & Security Gates (manufacturing-service)"
+    uses: ./.github/workflows/_java-build.yml
+    with:
+      service-name: manufacturing-service
+      service-dir: manufacturing-service
+      ecr-repository: manufacturing-service
+      aws-region: us-east-1
+      needs-database: true
+    secrets: inherit
+
+  deploy-dev:
+    name: "🚀 Deploy manufacturing-service → DEV"
+    needs: build
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: _gitops
+
+      - name: Update image tag — DEV
+        env:
+          IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
+        run: |
+          yq e ".image.tag = \"${IMAGE_TAG}\"" -i \
+            "_gitops/envs/dev/values-manufacturing-service.yaml"
+          cd _gitops
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git diff --staged --quiet && echo "Already up to date" && exit 0
+          git commit -m "ci(dev): update manufacturing-service → ${IMAGE_TAG}"
+          for i in 1 2 3 4 5; do
+            git push && break
+            echo "Push attempt $i failed — rebasing and retrying..."
+            git pull --rebase
+          done

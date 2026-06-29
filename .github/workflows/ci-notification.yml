@@ -1,0 +1,72 @@
+name: CI/CD — notification-service
+
+# Triggers on push to develop / release branches only.
+# Feature branches and PRs → ci-pr-notification.yml
+# PROD promotion → promote-prod.yml (workflow_dispatch)
+
+on:
+  push:
+    branches: [develop, 'release/**']
+    paths:
+      - 'notification-service/**'
+      - '.github/workflows/ci-notification.yml'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch to build'
+        required: false
+        default: 'develop'
+
+permissions:
+  id-token: write
+  contents: read
+  security-events: write
+  actions: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: notification-service
+  GITOPS_REPO: ${{ vars.GITOPS_REPO }}
+
+jobs:
+
+  build:
+    name: "Build & Security Gates (notification)"
+    uses: ./.github/workflows/_node-build.yml
+    with:
+      service-name: notification-service
+      service-dir: notification-service
+      ecr-repository: notification-service
+      node-version: '22'
+      aws-region: us-east-1
+    secrets: inherit
+
+  deploy-dev:
+    name: "🚀 Deploy notification → DEV"
+    needs: build
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: _gitops
+
+      - name: Update image tag — DEV
+        env:
+          IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
+        run: |
+          yq e ".image.tag = \"${IMAGE_TAG}\"" -i \
+            "_gitops/envs/dev/values-notification-service.yaml"
+          cd _gitops
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git diff --staged --quiet && echo "Already up to date" && exit 0
+          git commit -m "ci(dev): update notification-service → ${IMAGE_TAG}"
+          git pull --rebase origin main
+          git push

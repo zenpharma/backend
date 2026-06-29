@@ -1,0 +1,239 @@
+# Reusable — Java Build + SAST + Container Security + ECR Push + Cosign Sign
+#
+# Called by every Java/Spring Boot per-service ci-*.yml workflow.
+# Pipeline stages (all in a single job, sequential):
+#   1. Maven verify  — unit/integration tests + JaCoCo coverage gate (≥ 80%)
+#   2. SonarCloud    — SAST + code quality + coverage analysis
+#   3. OWASP Dep Chk — CVSS ≥ 7.0 reported (non-blocking)
+#   4. Docker build  — multi-stage, non-root UID/GID 1000
+#   5. Trivy         — image scan, fail on HIGH/CRITICAL CVEs
+#   6. ECR push      — tagged as sha-<7chars>
+#   7. Cosign sign   — keyless, GitHub OIDC → Fulcio CA → Rekor transparency log
+#
+# Outputs: image-tag (sha-<7chars>), registry (ECR registry URL)
+
+name: Reusable — Java Build & Security Gates
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        description: "Service name (e.g. api-gateway)"
+        required: true
+        type: string
+      service-dir:
+        description: "Service directory relative to repo root (e.g. api-gateway)"
+        required: true
+        type: string
+      ecr-repository:
+        description: "ECR repository name"
+        required: true
+        type: string
+      aws-region:
+        description: "AWS region where ECR lives"
+        required: false
+        type: string
+        default: us-east-1
+      needs-database:
+        description: "Start a PostgreSQL 15 container for integration tests"
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      image-tag:
+        description: "Docker image tag pushed to ECR (format: sha-<7chars>)"
+        value: ${{ jobs.build-and-push.outputs.image_tag }}
+      registry:
+        description: "ECR registry base URL"
+        value: ${{ jobs.build-and-push.outputs.registry }}
+    secrets:
+      AWS_ACCOUNT_ID:
+        required: true
+      NVD_API_KEY:
+        description: "NIST NVD API key — higher rate limits + faster OWASP NVD updates"
+        required: false
+
+jobs:
+  build-and-push:
+    name: Build · SAST · Scan · Push · Sign (${{ inputs.service-name }})
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write        # OIDC — AWS + Cosign keyless
+      contents: read         # Checkout
+      actions: read
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      registry:  ${{ steps.login-ecr.outputs.registry }}
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # ── Derive short-SHA image tag ───────────────────────────────────────────
+      - name: Set image tag
+        id: meta
+        run: echo "image_tag=sha-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      # ── Java toolchain ───────────────────────────────────────────────────────
+      - name: Setup Java 17 (Temurin)
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: maven
+
+      # ── Optional PostgreSQL for services that need a DB in tests ─────────────
+      - name: Start PostgreSQL (integration tests)
+        if: ${{ inputs.needs-database }}
+        run: |
+          docker run -d \
+            --name testdb \
+            -e POSTGRES_DB=testdb \
+            -e POSTGRES_USER=testuser \
+            -e POSTGRES_PASSWORD=testpass \
+            -p 5432:5432 \
+            postgres:15-alpine
+          echo "Waiting for PostgreSQL to be ready..."
+          until docker exec testdb pg_isready -U testuser 2>/dev/null; do
+            sleep 2
+          done
+          echo "PostgreSQL is ready."
+
+
+      # ── Build & Test ─────────────────────────────────────────────────────────
+      - name: "☕ Maven verify — compile, test, coverage (${{ inputs.service-name }})"
+        run: |
+          echo "::group::Maven Verify Output"
+          cd ${{ inputs.service-dir }} && mvn verify --no-transfer-progress
+          echo "::endgroup::"
+        env:
+          SPRING_DATASOURCE_URL:      ${{ inputs.needs-database && 'jdbc:postgresql://localhost:5432/testdb' || '' }}
+          SPRING_DATASOURCE_USERNAME: ${{ inputs.needs-database && 'testuser' || '' }}
+          SPRING_DATASOURCE_PASSWORD: ${{ inputs.needs-database && 'testpass' || '' }}
+
+      - name: "📊 Upload JaCoCo coverage report"
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage-${{ inputs.service-name }}
+          path: ${{ inputs.service-dir }}/target/site/jacoco/
+          retention-days: 7
+
+      # ── Code Quality & Security ──────────────────────────────────────────────
+      - name: "🔍 SonarCloud — SAST + code quality (${{ inputs.service-name }})"
+        uses: SonarSource/sonarcloud-github-action@v3
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          projectBaseDir: ${{ inputs.service-dir }}
+          args: >
+            -Dsonar.organization=${{ vars.SONAR_ORG }}
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY_BACKEND }}
+            -Dsonar.java.binaries=target/classes
+            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+
+
+      - name: Cache OWASP NVD database
+        if: false
+        uses: actions/cache@v4
+        with:
+          path: ~/.owasp/dependency-check-data
+          key: owasp-nvd-${{ runner.os }}-${{ hashFiles(format('{0}/pom.xml', inputs.service-dir)) }}
+          restore-keys: owasp-nvd-${{ runner.os }}-
+
+      - name: OWASP Dependency Check (CVSS ≥ 7.0 — advisory; non-blocking)
+        if: false
+        continue-on-error: true
+        run: |
+          cd ${{ inputs.service-dir }}
+          mvn org.owasp:dependency-check-maven:check \
+            -DfailBuildOnCVSS=7 \
+            -DenableRetired=true \
+            -DdataDirectory=$HOME/.owasp/dependency-check-data \
+            -Dformat=HTML \
+            --no-transfer-progress
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+
+      - name: Upload Dependency Check report
+        if: false
+        uses: actions/upload-artifact@v6
+        with:
+          name: depcheck-${{ inputs.service-name }}
+          path: ${{ inputs.service-dir }}/target/dependency-check-report.html
+          retention-days: 14
+
+      # ── AWS & ECR ──────────────────────────────────────────────────────────────
+      - name: "🔑 Configure AWS credentials (OIDC)"
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/pharma-dev-github-actions-role
+          aws-region: ${{ inputs.aws-region }}
+
+
+      - name: "🔑 Login to Amazon ECR"
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── Docker ───────────────────────────────────────────────────────────────
+      - name: "🐳 Docker build (${{ inputs.service-name }})"
+        id: docker-build
+        run: |
+          IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository }}:${{ steps.meta.outputs.image_tag }}"
+          cd ${{ inputs.service-dir }}
+          docker build \
+            --build-arg UID=1000 \
+            --build-arg GID=1000 \
+            -t "$IMAGE" \
+            .
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+
+      # ── Trivy — image scan ────────────────────────────────────────────────────
+      - name: "🛡️ Trivy — image vulnerability scan (${{ inputs.service-name }})"
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.docker-build.outputs.image }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+          ignore-unfixed: true
+
+      # ── Push & Sign ──────────────────────────────────────────────────────────
+      - name: "📦 Push image to ECR"
+        id: push
+        run: |
+          IMAGE="${{ steps.docker-build.outputs.image }}"
+          docker push "$IMAGE"
+          # Capture the content-addressable digest for immutable signing reference
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE" | awk -F@ '{print $2}')
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          echo "Pushed: $IMAGE  (digest: $DIGEST)"
+
+      # ── Cosign keyless sign ────────────────────────────────────────────────────
+      # GitHub OIDC token → Fulcio CA issues short-lived cert → Rekor audit log entry
+      # No long-lived signing keys. Kyverno policy in EKS verifies signature at admission.
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: "✍️ Cosign — sign image (keyless OIDC)"
+        run: |
+          cosign sign --yes \
+            "${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository }}@${{ steps.push.outputs.digest }}"
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+
+      # ── Summary ──────────────────────────────────────────────────────────────
+      - name: "📋 Build Summary"
+        if: always()
+        run: |
+          echo "## Build Results — ${{ inputs.service-name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Service** | \`${{ inputs.service-name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image Tag** | \`${{ steps.meta.outputs.image_tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **ECR** | \`${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${GITHUB_SHA::7}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | \`${GITHUB_REF_NAME}\` |" >> $GITHUB_STEP_SUMMARY

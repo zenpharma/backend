@@ -1,0 +1,27 @@
+name: PR Check — auth-service
+
+on:
+  push:
+    branches: ['feat-*', 'fix-*', 'chore-*']
+    paths:
+      - 'auth-service/**'
+      - '.github/workflows/ci-pr-auth-service.yml'
+  pull_request:
+    branches: [develop]
+    paths:
+      - 'auth-service/**'
+
+permissions:
+  contents: read
+  pull-requests: read
+  security-events: write
+  actions: read
+
+jobs:
+  pr-check:
+    uses: ./.github/workflows/_java-pr-check.yml
+    with:
+      service-name: auth-service
+      service-dir: auth-service
+      needs-database: true
+    secrets: inherit

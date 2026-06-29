@@ -1,0 +1,69 @@
+name: CI/CD — qc-service
+
+on:
+  push:
+    branches: [develop, 'release/**']
+    paths:
+      - 'qc-service/**'
+      - '.github/workflows/ci-qc-service.yml'
+
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch to build'
+        required: false
+        default: 'develop'
+
+permissions:
+  id-token: write
+  contents: read
+  security-events: write
+  actions: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: qc-service
+  GITOPS_REPO: ${{ vars.GITOPS_REPO }}
+
+jobs:
+
+  build:
+    name: "Build & Security Gates (qc-service)"
+    uses: ./.github/workflows/_java-build.yml
+    with:
+      service-name: qc-service
+      service-dir: qc-service
+      ecr-repository: qc-service
+      aws-region: us-east-1
+      needs-database: false
+    secrets: inherit
+
+  deploy-dev:
+    name: "🚀 Deploy qc-service → DEV"
+    needs: build
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: _gitops
+
+      - name: Update image tag — DEV
+        env:
+          IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
+        run: |
+          yq e ".image.tag = \"${IMAGE_TAG}\"" -i \
+            "_gitops/envs/dev/values-qc-service.yaml"
+          cd _gitops
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git diff --staged --quiet && echo "Already up to date" && exit 0
+          git commit -m "ci(dev): update qc-service → ${IMAGE_TAG}"
+          git pull --rebase origin main
+          git push
