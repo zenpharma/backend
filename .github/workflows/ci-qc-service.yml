@@ -22,7 +22,7 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REPOSITORY: qc-service
+  ECR_REPOSITORY: pharma-dev-qc-service
   GITOPS_REPO: ${{ vars.GITOPS_REPO }}
 
 jobs:
@@ -33,7 +33,7 @@ jobs:
     with:
       service-name: qc-service
       service-dir: qc-service
-      ecr-repository: qc-service
+      ecr-repository: pharma-dev-qc-service
       aws-region: us-east-1
       needs-database: false
     secrets: inherit

@@ -31,7 +31,7 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REPOSITORY: api-gateway
+  ECR_REPOSITORY: pharma-dev-api-gateway
   GITOPS_REPO: ${{ vars.GITOPS_REPO }}
 
 jobs:
@@ -43,7 +43,7 @@ jobs:
     with:
       service-name: api-gateway
       service-dir: api-gateway
-      ecr-repository: api-gateway
+      ecr-repository: pharma-dev-api-gateway
       aws-region: us-east-1
       needs-database: false
     secrets: inherit

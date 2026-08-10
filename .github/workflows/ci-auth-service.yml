@@ -25,7 +25,7 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REPOSITORY: auth-service
+  ECR_REPOSITORY: pharma-dev-auth-service
   GITOPS_REPO: ${{ vars.GITOPS_REPO }}
 
 jobs:
@@ -36,7 +36,7 @@ jobs:
     with:
       service-name: auth-service
       service-dir: auth-service
-      ecr-repository: auth-service
+      ecr-repository: pharma-dev-auth-service
       aws-region: us-east-1
       needs-database: true
     secrets: inherit
