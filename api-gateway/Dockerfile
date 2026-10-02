@@ -1,3 +1,4 @@
+# This is a multi-stage Dockerfile for building and running the API Gateway service.
 FROM eclipse-temurin:17-jre
 WORKDIR /app
 RUN groupadd -r pharma && useradd -r -g pharma pharma

@@ -134,7 +134,7 @@ jobs:
               --repo "$GITOPS_REPO_NAME" \
               --title "promote(qa): ${SVC} → ${IMAGE_TAG}" \
               --body-file /tmp/pr-body.md \
-              --base main \
+              --base master \
               --head "$BRANCH"
             echo "::notice title=QA PR opened::Review and merge in ${GITOPS_REPO_NAME} to deploy to QA."
           fi

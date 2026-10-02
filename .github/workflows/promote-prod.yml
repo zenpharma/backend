@@ -135,7 +135,7 @@ jobs:
             --repo "$GITOPS_REPO_NAME" \
             --title "promote(prod): ${SVC} → ${IMAGE_TAG}" \
             --body-file /tmp/pr-body.md \
-            --base main \
+            --base master \
             --head "$BRANCH"
 
           echo "::notice title=PROD PR opened::Review, get approvals, and merge in ${GITOPS_REPO_NAME}. Then manually sync ArgoCD pharma-prod/${SVC}."

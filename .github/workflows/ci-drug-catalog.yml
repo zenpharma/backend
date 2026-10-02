@@ -71,5 +71,5 @@ jobs:
           git add .
           git diff --staged --quiet && echo "Already up to date" && exit 0
           git commit -m "ci(dev): update ${SVC} → ${IMAGE_TAG}"
-          git pull --rebase origin main
+          git pull --rebase origin master
           git push
